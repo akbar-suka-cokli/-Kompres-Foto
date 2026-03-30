@@ -1,0 +1,2 @@
+# -Kompres-Foto
+No
